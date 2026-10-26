@@ -1,36 +1,59 @@
-
-
 import streamlit as st
+import yfinance as yf
 
-# ऐप का शीर्षक
-st.title("Rahul Trading App - Support & Resistance Calculator")
-st.write("यहाँ आप बाजार के भाव दर्ज करके अपने समर्थन और प्रतिरोध (Support & Resistance) के स्तर ज्ञात कर सकते हैं।")
+st.title("Rahul Trading App - Index Market Analyzer")
+st.write("Yeh app sirf Nifty 50, Bank Nifty aur Sensex ka live data laakar support aur resistance batata hai.")
 
-# उपयोगकर्ता से इनपुट लेना (High, Low, Close)
-high = st.number_input("आज का उच्च मूल्य (High Price):", value=0.0)
-low = st.number_input("आज का न्यूनतम मूल्य (Low Price):", value=0.0)
-close = st.number_input("अंतिम मूल्य (Close Price):", value=0.0)
+index_options = {
+    "Nifty 50": "^NSEI",
+    "Bank Nifty": "^NSEBANK",
+    "Sensex": "^BSESN"
+}
 
-# गणना करने का बटन
-if st.button("स्तर निकालें (Calculate Levels)"):
-    if high > 0 and low > 0 and close > 0:
-        # पिवट पॉइंट की गणना
-        pivot = (high + low + close) / 3
+selected_name = st.selectbox("Index chunein:", list(index_options.keys()))
+ticker_symbol = index_options[selected_name]
+
+if st.button("Live Index Data Dekhein"):
+    st.info("Market se live data laya ja raha hai, kripya pratiksha karein...")
+    
+    try:
+        index_data = yf.Ticker(ticker_symbol)
+        df = index_data.history(period="2d")
         
-        # रेजिस्टेंस और सपोर्ट की गणना
-        r1 = (2 * pivot) - low
-        s1 = (2 * pivot) - high
-        
-        r2 = pivot + (high - low)
-        s2 = pivot - (high - low)
-        
-        st.success("गणना सफल रही!")
-        
-        # परिणामों को प्रदर्शित करना
-        st.write(f"**पिवट पॉइंट (Pivot Point):** {pivot:.2f}")
-        st.write(f"**पहला रेजिस्टेंस (Resistance 1):** {r1:.2f}")
-        st.write(f"**पहला सपोर्ट (Support 1):** {s1:.2f}")
-        st.write(f"**दूसरा रेजिस्टेंस (Resistance 2):** {r2:.2f}")
-        st.write(f"**दूसरा सपोर्ट (Support 2):** {s2:.2f}")
-    else:
-        st.warning("कृपया सभी मूल्य सही-सही दर्ज करें।")
+        if len(df) >= 1:
+            latest_data = df.iloc[-1]
+            high = float(latest_data['High'])
+            low = float(latest_data['Low'])
+            close = float(latest_data['Close'])
+            
+            st.success(f"**{selected_name}** ka live data safaltapoorvak mil gaya!")
+            
+            st.metric(label="Live Close Price", value=f"₹{close:.2f}")
+            st.write(f"**High:** ₹{high:.2f}")
+            st.write(f"**Low:** ₹{low:.2f}")
+            
+            pivot = (high + low + close) / 3
+            r1 = (2 * pivot) - low
+            s1 = (2 * pivot) - high
+            r2 = pivot + (high - low)
+            s2 = pivot - (high - low)
+            
+            st.markdown("---")
+            st.subheader("Support एवं Resistance Level")
+            st.write(f"R2: {r2:.2f}")
+            st.write(f"R1: {r1:.2f}")
+            st.write(f"Pivot: {pivot:.2f}")
+            st.write(f"S1: {s1:.2f}")
+            st.write(f"S2: {s2:.2f}")
+            
+            st.markdown("---")
+            st.subheader("Market Signal")
+            if close > pivot:
+                st.success("Bullish: Market pivot point ke upar majboot hai.")
+            else:
+                st.error("Bearish: Market pivot point ke niche kamjor hai.")
+        else:
+            st.error("Data prapt nahi ho saka.")
+            
+    except Exception as e:
+        st.error(f"Data khinchne mein samasya aayi: {e}")
