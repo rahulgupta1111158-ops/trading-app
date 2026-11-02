@@ -81,4 +81,47 @@ with col_s2:
     st.info(market_mood)
 
 st.markdown("---")
-st.caption("Engine status: 100% Stable & Error-Free")
+st.caption("Engine status: 100% Stable & Error-Free")  
+
+import os
+import json
+from datetime import datetime
+
+DATA_DIR = "database"
+STRATEGY_FILE = os.path.join(DATA_DIR, "strategies.json")
+
+os.makedirs(DATA_DIR, exist_ok=True)
+if not os.path.exists(STRATEGY_FILE):
+    with open(STRATEGY_FILE, "w", encoding="utf-8") as f:
+        json.dump([], f, ensure_ascii=False, indent=4)
+
+def save_strategy_to_db(video_url, rules_text):
+    try:
+        with open(STRATEGY_FILE, "r", encoding="utf-8") as f:
+            strategies = json.load(f)
+        
+        new_entry = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "video_url": video_url,
+            "rules": rules_text,
+            "status": "Saved & Locked"
+        }
+        
+        strategies.append(new_entry)
+        
+        with open(STRATEGY_FILE, "w", encoding="utf-8") as f:
+            json.dump(strategies, f, ensure_ascii=False, indent=4)
+        return True
+    except Exception as e:
+        print(f"Error saving strategy: {e}")
+        return False
+
+def load_strategies_from_db():
+    if not os.path.exists(STRATEGY_FILE):
+        return []
+    try:
+        with open(STRATEGY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading strategies: {e}")
+        return []
