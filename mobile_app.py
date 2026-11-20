@@ -1,296 +1,268 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
 import yfinance as yf
-import requests
+import pandas as pd
 import plotly.graph_objects as go
-from streamlit_autorefresh import st_autorefresh
+from datetime import datetime
+import pytz
 
-# 1. पेज कॉन्फ़िगरेशन
+# --- Page Config ---
 st.set_page_config(
-    page_title="Rahul Pro Trading Terminal [Synced Engine]",
+    page_title="Rahul Pro Index Terminal (100% Real Data)",
     page_icon="⚡",
     layout="wide"
 )
 
-# 2. ऑटो-रिफ्रेश इंजन (हर 5 सेकंड लाइव)
-count = st_autorefresh(interval=5000, limit=None, key="live_trading_counter")
-
+# --- Custom CSS (Angel One Style Clean Cards) ---
 st.markdown("""
-    <h1 style='color: #FF4B4B; margin-bottom: 0px;'>⚡ Rahul Pro Trading Terminal [Synced Engine]</h1>
-    <p style='color: gray; margin-top: 5px;'>Live Auto-Refresh (5s) | 100% Verified & Accurate Market Action Points 🟢</p>
+<style>
+    .index-card {
+        background-color: #ffffff;
+        border: 1px solid #e6e9ef;
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 10px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    }
+    .index-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: #4a5568;
+        margin-bottom: 4px;
+    }
+    .index-price {
+        font-size: 18px;
+        font-weight: 700;
+        color: #1a202c;
+        margin-bottom: 2px;
+    }
+    .up-text {
+        color: #00a878;
+        font-size: 12px;
+        font-weight: 600;
+    }
+    .down-text {
+        color: #e53e3e;
+        font-size: 12px;
+        font-weight: 600;
+    }
+    .neutral-text {
+        color: #718096;
+        font-size: 12px;
+        font-weight: 600;
+    }
+</style>
 """, unsafe_allow_html=True)
-st.markdown("---")
 
-# 3. स्टेबल और रीयल-टाइम मार्केट सिंक्ड इंजन
-@st.cache_data(ttl=10)
-def fetch_live_market_data(symbol_name):
-    return {"status": "SYNCED"}
-
-# 4. आपके 8 लाइव इंडेक्स कार्ड्स
-indices_dict = {
-    "Nifty 50": {"sym": "^NSEI", "expiry": "Expiry Weekly"},
-    "Bank Nifty": {"sym": "^NSEBANK", "expiry": "Expiry Weekly"},
-    "Fin Nifty": {"sym": "^CNXFIN", "expiry": "Expiry Weekly"},
-    "Midcap Nifty": {"sym": "^NSEMDCP50", "expiry": "Expiry Weekly"},
-    "Sensex": {"sym": "^BSESN", "expiry": "Monthly"},
-    "Gift Nifty": {"sym": "GIFTNIFTY.NS", "expiry": "Global"},
-    "India VIX": {"sym": "^INDIAVIX", "expiry": "Volatility"},
-    "Dow Jones": {"sym": "^DJI", "expiry": "US Market"}
+# --- 8 Indices List (Exact Same as Your App) ---
+INDICES = {
+    "Nifty 50": ["^NSEI"],
+    "Bank Nifty": ["^NSEBANK"],
+    "Fin Nifty": ["NIFTY_FIN_SERVICE.NS", "^CNXFIN"],
+    "Midcap Nifty": ["^NSEMDCP50", "NIFTY_MID_SELECT.NS"],
+    "Sensex": ["^BSESN"],
+    "Gift Nifty": ["GIFTY.NS", "^NSEI"],
+    "India VIX": ["^INDIAVIX"],
+    "Dow Jones": ["^DJI"]
 }
 
-st.markdown("### 📊 Live Market Indices (Angel One Style)")
-idx_keys = list(indices_dict.keys())
-vix_val = 13.5
-
-for row_start in [0, 4]:
-    cols = st.columns(4)
-    for i in range(row_start, row_start + 4):
-        name = idx_keys[i]
-        item = indices_dict[name]
+@st.cache_data(ttl=30)
+def fetch_real_index_data(tickers):
+    for ticker in tickers:
         try:
-            df = yf.Ticker(item["sym"]).history(period="1d")
-            if not df.empty:
-                p = df['Close'].iloc[-1]
-                op = df['Open'].iloc[-1]
-                chg = p - op
-                pct = (chg / op) * 100
-                if name == "India VIX":
-                    vix_val = p
-            else:
-                p, chg, pct = 0.0, 0.0, 0.0
-        except:
-            p, chg, pct = 0.0, 0.0, 0.0
-            
-        color_style = "color: #137333;" if chg >= 0 else "color: #c5221f;"
-        arrow = "▲" if chg >= 0 else "▼"
-        with cols[i - row_start]:
-            st.markdown(f"""
-                <div style='background-color: #ffffff; padding: 12px; border-radius: 8px; border: 1px solid #e0e0e0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 10px;'>
-                    <div style='display: flex; justify-content: space-between; align-items: center;'>
-                        <b style='font-size: 14px; color: #333;'>{name}</b>
-                        <span style='background-color: #f0f2f6; font-size: 9px; padding: 2px 5px; border-radius: 4px; color: #555;'>{item["expiry"]}</span>
+            df = yf.download(ticker, period="5d", interval="1d", progress=False)
+            if df is not None and not df.empty:
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                df = df.dropna(subset=["Close"])
+                if len(df) >= 2:
+                    today = df.iloc[-1]
+                    prev = df.iloc[-2]
+
+                    cmp = float(today["Close"])
+                    open_p = float(today["Open"])
+                    day_high = float(today["High"])
+                    day_low = float(today["Low"])
+
+                    prev_high = float(prev["High"])
+                    prev_low = float(prev["Low"])
+                    prev_close = float(prev["Close"])
+
+                    change = cmp - prev_close
+                    pct_change = (change / prev_close) * 100 if prev_close != 0 else 0.0
+
+                    # Classic Pivot Points (100% Real Mathematical Formula from Prev H/L/C)
+                    pivot = (prev_high + prev_low + prev_close) / 3
+                    r1 = (2 * pivot) - prev_low
+                    s1 = (2 * pivot) - prev_high
+                    r2 = pivot + (prev_high - prev_low)
+                    s2 = pivot - (prev_high - prev_low)
+
+                    return {
+                        "available": True,
+                        "ticker": ticker,
+                        "cmp": cmp,
+                        "open": open_p,
+                        "day_high": day_high,
+                        "day_low": day_low,
+                        "prev_high": prev_high,
+                        "prev_low": prev_low,
+                        "prev_close": prev_close,
+                        "change": change,
+                        "pct_change": pct_change,
+                        "pivot": pivot,
+                        "r1": r1,
+                        "r2": r2,
+                        "s1": s1,
+                        "s2": s2,
+                        "history": df
+                    }
+        except Exception:
+            continue
+    return {"available": False}
+
+# --- Header ---
+ist = pytz.timezone("Asia/Kolkata")
+now_ist = datetime.now(ist).strftime("%d %b %Y, %I:%M:%S %p IST")
+
+col_h1, col_h2 = st.columns([4, 1])
+with col_h1:
+    st.markdown("## ⚡ Rahul Pro Index Terminal (100% Real Data)")
+    st.caption(f"Last Updated: {now_ist} | Only Real Market Price, Prev High/Low & Pivot Levels (Zero Sample Data)")
+with col_h2:
+    if st.button("🔄 Refresh Now"):
+        st.cache_data.clear()
+        st.rerun()
+
+# --- Fetch All 8 Indices ---
+all_data = {}
+for name, symbols in INDICES.items():
+    if name == "Gift Nifty":
+        # Only use genuine Gift Nifty symbol; never fake with spot Nifty
+        all_data[name] = fetch_real_index_data(["GIFTY.NS"])
+    else:
+        all_data[name] = fetch_real_index_data(symbols)
+
+# --- Section 1: 8 Index Cards (Angel One Style) ---
+st.subheader("📊 Live Market Indices (Angel One Style)")
+
+index_names = list(INDICES.keys())
+for row_start in range(0, len(index_names), 4):
+    cols = st.columns(4)
+    for idx, col in enumerate(cols):
+        if row_start + idx < len(index_names):
+            name = index_names[row_start + idx]
+            d = all_data[name]
+            with col:
+                if d["available"]:
+                    arrow = "▲" if d["change"] >= 0 else "▼"
+                    css_cls = "up-text" if d["change"] >= 0 else "down-text"
+                    sign = "+" if d["change"] >= 0 else ""
+                    st.markdown(f"""
+                    <div class="index-card">
+                        <div class="index-title">{name}</div>
+                        <div class="index-price">{d['cmp']:,.2f}</div>
+                        <div class="{css_cls}">{arrow} {sign}{d['change']:,.2f} ({sign}{d['pct_change']:.2f}%)</div>
                     </div>
-                    <div style='margin-top: 8px; font-size: 17px; font-weight: bold; color: #111;'>{p:,.2f}</div>
-                    <div style='font-size: 11px; font-weight: 600; {color_style} margin-top: 2px;'>{arrow} {chg:+,.2f} ({pct:+.2f}%)</div>
-                </div>
-            """, unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+                    <div class="index-card">
+                        <div class="index-title">{name}</div>
+                        <div class="index-price">N/A</div>
+                        <div class="neutral-text">Real Feed Unavailable</div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
 st.markdown("---")
 
-# 5. Market Yatra Synced Action Points Table
-st.markdown("### 📋 Verified Action Points & Professional Levels")
-try:
-    nifty_df = yf.Ticker("^NSEI").history(period="1d")
-    nifty_spot = nifty_df['Close'].iloc[-1]
-    nifty_chg = nifty_spot - nifty_df['Open'].iloc[-1]
+# --- Section 2: All 8 Indices Real Levels Summary Table ---
+st.subheader("📋 All Indices: Day High/Low, Prev High/Low & Real Support/Resistance")
+
+table_rows = []
+for name in index_names:
+    d = all_data[name]
+    if d["available"]:
+        table_rows.append({
+            "Index": name,
+            "Current Price": round(d["cmp"], 2),
+            "Day Low": round(d["day_low"], 2),
+            "Day High": round(d["day_high"], 2),
+            "Prev Day Low": round(d["prev_low"], 2),
+            "Prev Day High": round(d["prev_high"], 2),
+            "Support 2 (S2)": round(d["s2"], 2),
+            "Support 1 (S1)": round(d["s1"], 2),
+            "Pivot": round(d["pivot"], 2),
+            "Resistance 1 (R1)": round(d["r1"], 2),
+            "Resistance 2 (R2)": round(d["r2"], 2),
+        })
+    else:
+        table_rows.append({
+            "Index": name,
+            "Current Price": "Feed Unavailable",
+            "Day Low": "-",
+            "Day High": "-",
+            "Prev Day Low": "-",
+            "Prev Day High": "-",
+            "Support 2 (S2)": "-",
+            "Support 1 (S1)": "-",
+            "Pivot": "-",
+            "Resistance 1 (R1)": "-",
+            "Resistance 2 (R2)": "-",
+        })
+
+st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+
+st.markdown("---")
+
+# --- Section 3: Detailed Index Analyzer (100% Real Levels & Intraday Chart) ---
+st.subheader("🎯 Detailed Index Analyzer & Real Support/Resistance Hub")
+
+available_indices = [k for k, v in all_data.items() if v["available"]]
+selected_index = st.selectbox("Select Index for Deep Analysis", available_indices)
+
+if selected_index:
+    sel = all_data[selected_index]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric(f"{selected_index} - Price", f"{sel['cmp']:,.2f}", f"{sel['change']:+.2f} ({sel['pct_change']:+.2f}%)")
+    m2.metric("Today Open", f"{sel['open']:,.2f}")
+    m3.metric("Today Day High", f"{sel['day_high']:,.2f}")
+    m4.metric("Today Day Low", f"{sel['day_low']:,.2f}")
+
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric("Prev Day High", f"{sel['prev_high']:,.2f}")
+    p2.metric("Prev Day Low", f"{sel['prev_low']:,.2f}")
+    p3.metric("Resistance 1 (R1)", f"{sel['r1']:,.2f}")
+    p4.metric("Support 1 (S1)", f"{sel['s1']:,.2f}")
+
+    # Intraday 5m Chart with Real Levels
+    st.markdown(f"#### 📈 {selected_index} Intraday Candlestick Chart (with Prev High/Low & S1/R1)")
+    intra = yf.download(sel["ticker"], period="2d", interval="5m", progress=False)
+    if intra is not None and not intra.empty:
+        if isinstance(intra.columns, pd.MultiIndex):
+            intra.columns = intra.columns.get_level_values(0)
+        intra = intra.tail(75)
+
+        fig = go.Figure(data=[go.Candlestick(
+            x=intra.index,
+            open=intra["Open"],
+            high=intra["High"],
+            low=intra["Low"],
+            close=intra["Close"],
+            name=selected_index
+        )])
+
+        fig.add_hline(y=sel["prev_high"], line_dash="dash", line_color="red", annotation_text=f"Prev High ({sel['prev_high']:.2f})")
+        fig.add_hline(y=sel["prev_low"], line_dash="dash", line_color="green", annotation_text=f"Prev Low ({sel['prev_low']:.2f})")
+        fig.add_hline(y=sel["r1"], line_dash="dot", line_color="orange", annotation_text=f"R1 ({sel['r1']:.2f})")
+        fig.add_hline(y=sel["s1"], line_dash="dot", line_color="blue", annotation_text=f"S1 ({sel['s1']:.2f})")
+
+        fig.update_layout(
+            xaxis_rangeslider_visible=False,
+            height=450,
+            margin=dict(l=10, r=10, t=30, b=10)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Intraday candlestick data is currently unavailable from the feed for this index.")
     
-    bank_df = yf.Ticker("^NSEBANK").history(period="1d")
-    bank_spot = bank_df['Close'].iloc[-1]
-    bank_chg = bank_spot - bank_df['Open'].iloc[-1]
-    
-    sensex_df = yf.Ticker("^BSESN").history(period="1d")
-    sensex_spot = sensex_df['Close'].iloc[-1]
-    sensex_chg = sensex_spot - sensex_df['Open'].iloc[-1]
-except:
-    nifty_spot, nifty_chg = 25381.70, 104.40
-    bank_spot, bank_chg = 62219.75, 780.00
-    sensex_spot, sensex_chg = 82506.19, 345.00
-
-def get_dynamic_action(spot, chg, step):
-    trend = "Bullish" if chg > 0 else "Bearish"
-    sup1 = int(round((spot - step) / step) * step)
-    sup2 = sup1 - step
-    res1 = int(round((spot + step) / step) * step)
-    res2 = res1 + step
-    pcr = round(max(0.70, min(1.45, 1.0 + (chg / spot) * 35)), 2)
-    mp = int(round(spot / step) * step)
-    return trend, f"{sup1} - {sup2}", f"{res1} - {res2}", str(pcr), str(mp)
-
-n_tr, n_sup, n_res, n_pcr, n_mp = get_dynamic_action(nifty_spot, nifty_chg, 100)
-b_tr, b_sup, b_res, b_pcr, b_mp = get_dynamic_action(bank_spot, bank_chg, 200)
-s_tr, s_sup, s_res, s_pcr, s_mp = get_dynamic_action(sensex_spot, sensex_chg, 300)
-
-action_table_data = {
-    "Action Points": ["Positional Trend", "Positional Support", "Positional Resistance", "PCR", "Max Pain"],
-    f"Nifty (CMP {nifty_spot:,.2f})": [n_tr, n_sup, n_res, n_pcr, n_mp],
-    f"Bank Nifty (CMP {bank_spot:,.2f})": [b_tr, b_sup, b_res, b_pcr, b_mp],
-    f"Sensex (CMP {sensex_spot:,.2f})": [s_tr, s_sup, s_res, s_pcr, s_mp]
-}
-st.dataframe(pd.DataFrame(action_table_data), use_container_width=True, hide_index=True)
-
-st.markdown("---")
-
-# 6. Detailed Index Analyzer & Real-Time Support/Resistance Hub
-st.markdown("### 🎯 Detailed Index Analyzer & Live Support/Resistance Hub")
-selected_index_name = st.selectbox("Select Index for Deep Analysis", ["Nifty 50", "Bank Nifty", "Fin Nifty", "Midcap Nifty"])
-sel_sym = indices_dict[selected_index_name]["sym"]
-
-try:
-    todays_data = yf.Ticker(sel_sym).history(period="2d")
-    live_price = todays_data['Close'].iloc[-1]
-    open_price = todays_data['Open'].iloc[-1]
-    high_price = todays_data['High'].iloc[-1]
-    low_price = todays_data['Low'].iloc[-1]
-    price_diff = live_price - open_price
-    price_pct = (price_diff / open_price) * 100
-except:
-    live_price, open_price, high_price, low_price, price_diff, price_pct = 25381.70, 25277.30, 25416.85, 25267.30, 104.40, 0.41
-
-c1, c2, c3, c4 = st.columns(4)
-c1.metric(f"{selected_index_name} - Live", f"{live_price:,.2f}", f"{price_diff:+.2f} ({price_pct:+.2f}%)")
-c2.metric("Open Price", f"{open_price:,.2f}")
-c3.metric("Day High", f"{high_price:,.2f}")
-c4.metric("Day Low", f"{low_price:,.2f}")
-
-st.markdown("---")
-
-# 7. Synced Support/Resistance, StockMojo PCR & Max Pain + Call/Put Writing Hub
-step_size = 100 if selected_index_name == "Bank Nifty" else 50
-atm_strike = int(round(live_price / step_size) * step_size)
-
-momentum_factor = (price_diff / live_price) * 50 if live_price > 0 else 0.1
-pcr_val = round(max(0.70, min(1.45, 1.0 + momentum_factor)), 2)
-max_pain_val = atm_strike
-ce_oi_cr, pe_oi_cr = 26.41, 33.48
-ce_chg_cr, pe_chg_cr = 7.19, 15.34
-
-tot_oi_sum = ce_oi_cr + pe_oi_cr
-ce_pct = round((ce_oi_cr / tot_oi_sum) * 100) if tot_oi_sum > 0 else 44
-pe_pct = 100 - ce_pct
-sentiment_txt = "Bullish" if pcr_val >= 1.0 else "Bearish"
-sentiment_color = "#137333" if pcr_val >= 1.0 else "#c5221f"
-
-dyn_res_1 = atm_strike + (step_size * 2)
-dyn_res_2 = atm_strike + (step_size * 4)
-dyn_sup_1 = atm_strike - (step_size * 2)
-dyn_sup_2 = atm_strike - (step_size * 4)
-
-sr_col1, sr_col2, sr_col3 = st.columns(3)
-
-with sr_col1:
-    st.markdown(f"#### 📊 Support & Resistance ({selected_index_name})")
-    st.markdown(f"""
-        <div style='background-color: #ffffff; padding: 16px; border-radius: 8px; border: 1px solid #e0e0e0; height: 185px;'>
-            <b>Positional Resistance:</b> <code style='color: #c5221f; font-weight: bold;'>{dyn_res_1:,} - {dyn_res_2:,}</code><br><br>
-            <b>Spot CMP:</b> <code>{live_price:,.2f}</code><br><br>
-            <b>Positional Support:</b> <code style='color: #137333; font-weight: bold;'>{dyn_sup_1:,} - {dyn_sup_2:,}</code><br>
-            <hr style='margin: 8px 0;'>
-            <span style='font-size: 11px; color: gray;'>* Live price & OI synchronized.</span>
-        </div>
-    """, unsafe_allow_html=True)
-
-with sr_col2:
-    st.markdown(f"#### 📉 StockMojo Synced PCR & Max Pain")
-    st.markdown(f"""
-        <div style='background-color: #ffffff; padding: 16px; border-radius: 8px; border: 1px solid #e0e0e0; height: 185px;'>
-            <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;'>
-                <span style='background-color: #e6f4ea; color: #137333; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold;'>Spot: {live_price:,.2f}</span>
-                <span style='background-color: #d96b27; color: #ffffff; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold;'>Max Pain: {max_pain_val:,}</span>
-            </div>
-            <b>PCR:</b> <span style='color: {sentiment_color}; font-size: 20px; font-weight: bold;'>{pcr_val}</span> 
-            <span style='color: {sentiment_color}; font-size: 12px; font-weight: 600;'>({sentiment_txt})</span><br>
-            <span style='font-size: 13px;'>Call OI: <b>{ce_oi_cr} Cr</b> ({ce_pct}%) | Put OI: <b>{pe_oi_cr} Cr</b> ({pe_pct}%)</span><br>
-            <span style='font-size: 11px; color: gray;'>🟢 StockMojo Synced Engine</span>
-        </div>
-    """, unsafe_allow_html=True)
-
-with sr_col3:
-    writer_badge = "🔥 Put Writers Dominant (Bullish Support)"
-    writer_bg = "#e6f4ea"
-    writer_col = "#137333"
-
-    st.markdown(f"#### ✍️ Call vs Put Writing (Intraday)")
-    st.markdown(f"""
-        <div style='background-color: #ffffff; padding: 16px; border-radius: 8px; border: 1px solid #e0e0e0; height: 185px;'>
-            <div style='background-color: {writer_bg}; color: {writer_col}; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; text-align: center; margin-bottom: 10px;'>
-                {writer_badge}
-            </div>
-            <div style='display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px;'>
-                <span>🟢 <b>Put Chg:</b> {pe_chg_cr} Cr</span>
-                <span>🔴 <b>Call Chg:</b> {ce_chg_cr} Cr</span>
-            </div>
-            <div style='width: 100%; background-color: #e74c3c; height: 10px; border-radius: 5px; overflow: hidden; margin: 8px 0;'>
-                <div style='width: 65%; background-color: #2ecc71; height: 100%;'></div>
-            </div>
-            <div style='display: flex; justify-content: space-between; font-size: 11px; color: #555;'>
-                <span>Put Dominance: <b>65%</b></span>
-                <span>Market Vibe: <b>Bullish</b></span>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
-
-st.markdown("---")
-
-# 8. StockMojo Style Visuals (Bar + Donut Charts)
-st.markdown("### 📊 Market Sentiment & Open Interest Visuals (StockMojo Style)")
-chart_col1, chart_col2, chart_col3 = st.columns([1, 1, 1.1])
-
-with chart_col1:
-    st.markdown("**OI Change (Call vs Put)**")
-    fig_chg = go.Figure(data=[
-        go.Bar(name='CALL', x=['CALL'], y=[ce_chg_cr], marker_color='#e74c3c', text=[f"{ce_chg_cr} Cr"], textposition='auto'),
-        go.Bar(name='PUT', x=['PUT'], y=[pe_chg_cr], marker_color='#2ecc71', text=[f"{pe_chg_cr} Cr"], textposition='auto')
-    ])
-    fig_chg.update_layout(height=230, margin=dict(l=10, r=10, t=20, b=10), showlegend=False, plot_bgcolor='white')
-    st.plotly_chart(fig_chg, use_container_width=True)
-
-with chart_col2:
-    st.markdown("**Total OI (Call vs Put)**")
-    fig_tot = go.Figure(data=[
-        go.Bar(name='CALL', x=['CALL'], y=[ce_oi_cr], marker_color='#e74c3c', text=[f"{ce_oi_cr} Cr"], textposition='auto'),
-        go.Bar(name='PUT', x=['PUT'], y=[pe_oi_cr], marker_color='#2ecc71', text=[f"{pe_oi_cr} Cr"], textposition='auto')
-    ])
-    fig_tot.update_layout(height=230, margin=dict(l=10, r=10, t=20, b=10), showlegend=False, plot_bgcolor='white')
-    st.plotly_chart(fig_tot, use_container_width=True)
-
-with chart_col3:
-    st.markdown("**Put/Call Ratio (PCR Ring)**")
-    fig_donut = go.Figure(data=[go.Pie(
-        labels=[f'Call OI ({ce_pct}%)', f'Put OI ({pe_pct}%)'],
-        values=[ce_oi_cr, pe_oi_cr],
-        hole=.62,
-        marker_colors=['#e74c3c', '#2ecc71'],
-        textinfo='label'
-    )])
-    fig_donut.update_layout(
-        height=230,
-        margin=dict(l=10, r=10, t=20, b=10),
-        showlegend=False,
-        annotations=[dict(text=f"PCR<br><b>{pcr_val}</b>", x=0.5, y=0.5, font_size=16, showarrow=False)]
-    )
-    st.plotly_chart(fig_donut, use_container_width=True)
-
-st.markdown("---")
-
-# 9. Dynamic Live Strike-Wise Option Chain Table (अब पूरी तरह डायनेमिक और लाइव)
-st.markdown(f"### 📑 Live Strike-Wise Option Chain Table ({selected_index_name})")
-strikes_list = [
-    atm_strike - (step_size * 2), 
-    atm_strike - step_size, 
-    atm_strike, 
-    atm_strike + step_size, 
-    atm_strike + (step_size * 2)
-]
-
-oc_rows = []
-base_oi = 18400000
-for idx, s in enumerate(strikes_list):
-    # स्ट्राइक प्राइस के हिसाब से डेटा को ऑटो-कैलकुलेट और डायनेमिक बनाना
-    distance_from_atm = abs(s - atm_strike)
-    multiplier = 1 + (distance_from_atm / step_size) * 0.15
-    
-    oc_rows.append({
-        "Call OI": int(base_oi * multiplier),
-        "Call Chg": int(1150000 * (1.2 if s >= atm_strike else 0.8)),
-        "Call LTP (₹)": round(max(5.0, (s - live_price) * 0.1 + 120.5 if s > live_price else 200.0 - (live_price - s) * 0.1), 2),
-        "Strike Price": s,
-        "Put LTP (₹)": round(max(5.0, (live_price - s) * 0.1 + 134.4 if s < live_price else 200.0 - (s - live_price) * 0.1), 2),
-        "Put Chg": int(2340000 * (0.9 if s >= atm_strike else 1.3)),
-        "Put OI": int(25100000 * multiplier)
-    })
-
-st.dataframe(pd.DataFrame(oc_rows), use_container_width=True, hide_index=True)
-
-st.markdown("---")
-st.markdown("<p style='text-align: center; color: gray;'>Rahul Pro Trading Terminal | 100% StockMojo Synced Data ⚡</p>", unsafe_allow_html=True)
