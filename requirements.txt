@@ -5,3 +5,6 @@ yfinance
 streamlit-autorefresh
 requests
 plotly
+pyotp
+smartapi-python
+
