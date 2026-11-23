@@ -594,4 +594,16 @@ def main():
         st.info("Live spot price unavailable right now; option chain strikes will appear once live LTP is received.")
     else:
         oc_c1, oc_c2, oc_c3 = st.columns(3)
-        oc_c1.metric("Spot LTP", str(selec
+        oc_c1.metric("Spot LTP", str(selected_row["LTP"]))
+        oc_c2.metric("Option Chain PCR", str(pcr_val))
+        oc_c3.metric("Calculated Max Pain", str(max_pain_val))
+
+        st.dataframe(oc_df.fillna("N/A"), use_container_width=True, hide_index=True)
+
+    if auto_refresh:
+        time.sleep(15)
+        st.rerun()
+
+
+if __name__ == "__main__":
+    main()
