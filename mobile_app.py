@@ -16,7 +16,6 @@ st.set_page_config(
 
 SCRIP_MASTER_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
 
-# 9 Indices Configuration (6 F&O + 3 Global/Volatility)
 INDEX_CONFIG = [
     {
         "name": "Nifty",
@@ -135,14 +134,12 @@ def get_smartapi_client():
 
 @st.cache_data(ttl=3600)
 def load_scrip_master():
-    """Download and cache Angel One OpenAPI Scrip Master for option contract lookup."""
     try:
         resp = requests.get(SCRIP_MASTER_URL, timeout=20)
         if resp.status_code == 200:
             data = resp.json()
             if isinstance(data, list) and data:
-                df = pd.DataFrame(data)
-                return df
+                return pd.DataFrame(data)
     except Exception:
         pass
     return pd.DataFrame()
@@ -171,8 +168,7 @@ def parse_expiry_date(exp_str):
 
 
 @st.cache_data(ttl=120)
-def get_prev_day_ohlc_cached(_smart_api_id, exch, token):
-    """Fetch previous trading session High and Low from historical daily candle data."""
+def get_prev_day_ohlc_cached(_status_key, exch, token):
     smart_api, _ = get_smartapi_client()
     if not smart_api or not token:
         return None, None
@@ -203,7 +199,6 @@ def get_prev_day_ohlc_cached(_smart_api_id, exch, token):
 
 
 def classify_buildup(price_chg_pct, oi_chg_pct):
-    """Classify Long Buildup, Short Buildup, Short Covering, or Long Unwinding."""
     if price_chg_pct is None or oi_chg_pct is None:
         return "N/A"
     if abs(price_chg_pct) < 0.01 and abs(oi_chg_pct) < 0.01:
@@ -220,7 +215,6 @@ def classify_buildup(price_chg_pct, oi_chg_pct):
 
 
 def classify_writing(call_oi_chg, put_oi_chg):
-    """Identify dominant Call Writing vs Put Writing from OI changes."""
     if call_oi_chg is None and put_oi_chg is None:
         return "N/A"
     c_chg = call_oi_chg if call_oi_chg is not None else 0.0
@@ -235,7 +229,6 @@ def classify_writing(call_oi_chg, put_oi_chg):
 
 
 def calculate_max_pain(chain_df):
-    """Calculate strike with minimum total intrinsic option payout at expiry."""
     if chain_df.empty:
         return "N/A"
     strikes = chain_df["Strike"].tolist()
@@ -263,7 +256,6 @@ def calculate_max_pain(chain_df):
 
 
 def get_index_quote(smart_api, cfg, status_msg):
-    """Fetch real quote data without using mock/sample numbers."""
     ltp = None
     open_p = None
     high_p = None
@@ -323,7 +315,6 @@ def get_index_quote(smart_api, cfg, status_msg):
 
 
 def get_option_contracts(scrip_df, fo_exch, fo_name, spot_price, step_size, num_strikes):
-    """Find nearest expiry CE and PE contracts around ATM strike from Scrip Master."""
     if scrip_df.empty or not fo_exch or not fo_name or spot_price is None:
         return None, []
 
@@ -346,7 +337,6 @@ def get_option_contracts(scrip_df, fo_exch, fo_name, spot_price, step_size, num_
     nearest_exp = min(sub["_exp_date"].unique())
     exp_df = sub[sub["_exp_date"] == nearest_exp].copy()
 
-    # Angel One scrip master strike is often multiplied by 100; normalize to actual strike
     exp_df["_strike_raw"] = pd.to_numeric(exp_df["strike"], errors="coerce")
     atm = round(spot_price / step_size) * step_size
     target_strikes = {atm + (i * step_size) for i in range(-num_strikes, num_strikes + 1)}
@@ -366,11 +356,7 @@ def get_option_contracts(scrip_df, fo_exch, fo_name, spot_price, step_size, num_
     contracts = []
     for _, r in exp_df.iterrows():
         sym = str(r["symbol"]).upper()
-        opt_type = None
-        if sym.endswith("CE"):
-            opt_type = "CE"
-        elif sym.endswith("PE"):
-            opt_type = "PE"
+        opt_type = "CE" if sym.endswith("CE") else ("PE" if sym.endswith("PE") else None)
         if opt_type:
             contracts.append(
                 {
@@ -386,12 +372,10 @@ def get_option_contracts(scrip_df, fo_exch, fo_name, spot_price, step_size, num_
 
 
 def fetch_option_market_data(smart_api, contracts):
-    """Fetch live LTP, OI, and Volume for option contracts in safe small batches."""
     results = {}
     if not smart_api or not contracts:
         return results
 
-    # Group tokens by exchange for FULL / QUOTE mode if available
     by_exch = {}
     for c in contracts:
         by_exch.setdefault(c["exch"], []).append(c["token"])
@@ -411,9 +395,7 @@ def fetch_option_market_data(smart_api, contracts):
                         oi_v = safe_float(item.get("opnInterest"))
                         prev_oi_v = safe_float(item.get("prevOpenInterest"))
                         vol_v = safe_float(item.get("tradeVolume"))
-                        chg_oi_v = None
-                        if oi_v is not None and prev_oi_v is not None:
-                            chg_oi_v = oi_v - prev_oi_v
+                        chg_oi_v = (oi_v - prev_oi_v) if (oi_v is not None and prev_oi_v is not None) else None
                         results[tok] = {
                             "ltp": ltp_v,
                             "oi": oi_v,
@@ -421,7 +403,6 @@ def fetch_option_market_data(smart_api, contracts):
                             "vol": vol_v,
                         }
             except Exception:
-                # Fallback to ltpData per token if getMarketData fails
                 for tok in batch:
                     c_info = next((x for x in contracts if x["token"] == tok), None)
                     if c_info:
@@ -441,8 +422,7 @@ def fetch_option_market_data(smart_api, contracts):
     return results
 
 
-def build_nse_style_option_chain(spot_price, step_size, contracts, market_map, num_strikes=6):
-    """Build NSE-style CALLS | Strike | PUTS option chain DataFrame with real data."""
+def build_nse_style_option_chain(spot_price, step_size, contracts, market_map, num_strikes=5):
     cols = [
         "Call OI",
         "Call Chg OI",
@@ -462,8 +442,7 @@ def build_nse_style_option_chain(spot_price, step_size, contracts, market_map, n
 
     lookup = {}
     for c in contracts:
-        m = market_map.get(c["token"], {})
-        lookup[(c["strike"], c["type"])] = m
+        lookup[(c["strike"], c["type"])] = market_map.get(c["token"], {})
 
     rows = []
     for k in strikes:
@@ -502,7 +481,6 @@ def main():
 
     st.divider()
 
-    # 1. All 9 Indices Overview Table
     st.subheader("1. All 9 Indices Overview (Open, Prev High/Low, S&R, PCR, Max Pain)")
     overview_rows = [get_index_quote(smart_api, cfg, status_msg) for cfg in INDEX_CONFIG]
     df_overview = pd.DataFrame(overview_rows)
@@ -525,22 +503,20 @@ def main():
 
     st.divider()
 
-    # 2. Detailed Single Index Analyzer
     st.subheader("2. Detailed Index Analyzer (Call/Put Writing & Buildup)")
     index_names = [c["name"] for c in INDEX_CONFIG]
     selected_name = st.selectbox("Select Index", index_names, index=0)
     selected_cfg = next(c for c in INDEX_CONFIG if c["name"] == selected_name)
     selected_row = next(r for r in overview_rows if r["Index"] == selected_name)
 
-    # Fetch Option Chain early for selected index so PCR, Max Pain & Writing sync with Analyzer
     oc_df = pd.DataFrame()
     expiry_label = None
     pcr_val = "N/A"
     max_pain_val = "N/A"
     writing_status = "N/A"
     buildup_status = "N/A"
-
     strikes_around = 5
+
     if selected_cfg["has_oc"] and selected_row["_ltp_num"] is not None:
         scrip_df = load_scrip_master()
         expiry_label, contracts = get_option_contracts(
@@ -571,9 +547,13 @@ def main():
             writing_status = classify_writing(total_call_chg_oi, total_put_chg_oi)
 
             net_oi_chg_pct = None
-            prev_total_oi = (total_call_oi + total_put_oi) - ((total_call_chg_oi or 0.0) + (total_put_chg_oi or 0.0))
+            prev_total_oi = (total_call_oi + total_put_oi) - (
+                (total_call_chg_oi or 0.0) + (total_put_chg_oi or 0.0)
+            )
             if (total_call_chg_oi is not None or total_put_chg_oi is not None) and prev_total_oi > 0:
-                net_oi_chg_pct = (((total_call_chg_oi or 0.0) + (total_put_chg_oi or 0.0)) / prev_total_oi) * 100.0
+                net_oi_chg_pct = (
+                    ((total_call_chg_oi or 0.0) + (total_put_chg_oi or 0.0)) / prev_total_oi
+                ) * 100.0
             buildup_status = classify_buildup(selected_row["_chg_pct"], net_oi_chg_pct)
 
     m1, m2, m3, m4 = st.columns(4)
@@ -584,4 +564,34 @@ def main():
 
     m5, m6, m7, m8 = st.columns(4)
     m5.metric("Support", str(selected_row["Support"]))
-    m6.metric("Resistan
+    m6.metric("Resistance", str(selected_row["Resistance"]))
+    m7.metric("PCR", str(pcr_val))
+    m8.metric("Max Pain", str(max_pain_val))
+
+    c_w1, c_w2 = st.columns(2)
+    with c_w1:
+        st.markdown("**Price + OI Buildup Status**")
+        st.info(
+            f"Current Buildup: **{buildup_status}**  \n"
+            "Rules: Long Buildup (Price ↑, OI ↑) | Short Buildup (Price ↓, OI ↑) | "
+            "Short Covering (Price ↑, OI ↓) | Long Unwinding (Price ↓, OI ↓)"
+        )
+    with c_w2:
+        st.markdown("**Call Writing vs Put Writing**")
+        st.info(
+            f"Writing Bias: **{writing_status}**  \n"
+            "Call Writing (Call OI ↑ → Resistance/Supply) | "
+            "Put Writing (Put OI ↑ → Support/Demand)"
+        )
+
+    st.divider()
+
+    title_suffix = f" (Expiry: {expiry_label})" if expiry_label else ""
+    st.subheader(f"3. NSE-Style Option Chain — {selected_name}{title_suffix}")
+    if not selected_cfg["has_oc"]:
+        st.warning(f"Option Chain is not applicable/available for {selected_name}.")
+    elif selected_row["_ltp_num"] is None:
+        st.info("Live spot price unavailable right now; option chain strikes will appear once live LTP is received.")
+    else:
+        oc_c1, oc_c2, oc_c3 = st.columns(3)
+        oc_c1.metric("Spot LTP", str(selec
