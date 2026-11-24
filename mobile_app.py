@@ -376,13 +376,17 @@ def fetch_option_market_data(smart_api, contracts):
     if not smart_api or not contracts:
         return results
 
+    if "session_oi_baseline" not in st.session_state:
+        st.session_state["session_oi_baseline"] = {}
+    baseline_map = st.session_state["session_oi_baseline"]
+
     by_exch = {}
     for c in contracts:
         by_exch.setdefault(c["exch"], []).append(c["token"])
 
     for exch, tokens in by_exch.items():
         unique_tokens = list(dict.fromkeys(tokens))
-        batch_size = 20
+        batch_size = 25
         for i in range(0, len(unique_tokens), batch_size):
             batch = unique_tokens[i : i + batch_size]
             try:
@@ -395,7 +399,15 @@ def fetch_option_market_data(smart_api, contracts):
                         oi_v = safe_float(item.get("opnInterest"))
                         prev_oi_v = safe_float(item.get("prevOpenInterest"))
                         vol_v = safe_float(item.get("tradeVolume"))
-                        chg_oi_v = (oi_v - prev_oi_v) if (oi_v is not None and prev_oi_v is not None) else None
+
+                        chg_oi_v = None
+                        if oi_v is not None and prev_oi_v is not None:
+                            chg_oi_v = oi_v - prev_oi_v
+                        elif oi_v is not None:
+                            if tok not in baseline_map:
+                                baseline_map[tok] = oi_v
+                            chg_oi_v = oi_v - baseline_map[tok]
+
                         results[tok] = {
                             "ltp": ltp_v,
                             "oi": oi_v,
@@ -409,20 +421,26 @@ def fetch_option_market_data(smart_api, contracts):
                         try:
                             q = smart_api.ltpData(exch, c_info["symbol"], tok)
                             if isinstance(q, dict) and q.get("status") and q.get("data"):
+                                oi_v = safe_float(q["data"].get("oi"))
+                                chg_oi_v = None
+                                if oi_v is not None:
+                                    if tok not in baseline_map:
+                                        baseline_map[tok] = oi_v
+                                    chg_oi_v = oi_v - baseline_map[tok]
                                 results[tok] = {
                                     "ltp": safe_float(q["data"].get("ltp")),
-                                    "oi": safe_float(q["data"].get("oi")),
-                                    "chg_oi": None,
+                                    "oi": oi_v,
+                                    "chg_oi": chg_oi_v,
                                     "vol": None,
                                 }
                         except Exception:
                             pass
-            time.sleep(0.15)
+            time.sleep(0.12)
 
     return results
 
 
-def build_nse_style_option_chain(spot_price, step_size, contracts, market_map, num_strikes=5):
+def build_nse_style_option_chain(spot_price, step_size, contracts, market_map, num_strikes=15):
     cols = [
         "Call OI",
         "Call Chg OI",
@@ -464,6 +482,47 @@ def build_nse_style_option_chain(spot_price, step_size, contracts, market_map, n
     return pd.DataFrame(rows)
 
 
+def compute_option_metrics(smart_api, scrip_df, cfg, spot_price, num_strikes=15):
+    oc_df = pd.DataFrame()
+    expiry_label = None
+    pcr_val = "N/A"
+    max_pain_val = "N/A"
+    writing_status = "N/A"
+    buildup_status = "N/A"
+
+    if not cfg["has_oc"] or spot_price is None or scrip_df.empty:
+        return oc_df, expiry_label, pcr_val, max_pain_val, writing_status, buildup_status
+
+    expiry_label, contracts = get_option_contracts(
+        scrip_df,
+        cfg["fo_exch"],
+        cfg["fo_name"],
+        spot_price,
+        cfg["step"],
+        num_strikes=num_strikes,
+    )
+    market_map = fetch_option_market_data(smart_api, contracts)
+    oc_df = build_nse_style_option_chain(
+        spot_price,
+        cfg["step"],
+        contracts,
+        market_map,
+        num_strikes=num_strikes,
+    )
+    if not oc_df.empty:
+        total_call_oi = oc_df["Call OI"].sum(skipna=True)
+        total_put_oi = oc_df["Put OI"].sum(skipna=True)
+        if total_call_oi > 0:
+            pcr_val = round(total_put_oi / total_call_oi, 2)
+        max_pain_val = calculate_max_pain(oc_df)
+
+        total_call_chg_oi = oc_df["Call Chg OI"].sum(skipna=True) if oc_df["Call Chg OI"].notna().any() else None
+        total_put_chg_oi = oc_df["Put Chg OI"].sum(skipna=True) if oc_df["Put Chg OI"].notna().any() else None
+        writing_status = classify_writing(total_call_chg_oi, total_put_chg_oi)
+
+    return oc_df, expiry_label, pcr_val, max_pain_val, writing_status, buildup_status
+
+
 def main():
     st.title("Rahul Pro Index Terminal")
 
@@ -483,8 +542,19 @@ def main():
 
     st.subheader("1. All 9 Indices Overview (Open, Prev High/Low, S&R, PCR, Max Pain)")
     overview_rows = [get_index_quote(smart_api, cfg, status_msg) for cfg in INDEX_CONFIG]
-    df_overview = pd.DataFrame(overview_rows)
+    scrip_df = load_scrip_master()
 
+    # Populate PCR and Max Pain for F&O option indices in overview table
+    for r, cfg in zip(overview_rows, INDEX_CONFIG):
+        if cfg["has_oc"] and r["_ltp_num"] is not None and not scrip_df.empty:
+            _, _, idx_pcr, idx_mp, idx_wr, _ = compute_option_metrics(
+                smart_api, scrip_df, cfg, r["_ltp_num"], num_strikes=15
+            )
+            r["PCR"] = str(idx_pcr)
+            r["Max Pain"] = str(idx_mp)
+            r["Writing"] = str(idx_wr)
+
+    df_overview = pd.DataFrame(overview_rows)
     display_cols = [
         "Index",
         "LTP",
@@ -509,52 +579,26 @@ def main():
     selected_cfg = next(c for c in INDEX_CONFIG if c["name"] == selected_name)
     selected_row = next(r for r in overview_rows if r["Index"] == selected_name)
 
-    oc_df = pd.DataFrame()
-    expiry_label = None
-    pcr_val = "N/A"
-    max_pain_val = "N/A"
-    writing_status = "N/A"
+    strikes_around = 15
+    oc_df, expiry_label, pcr_val, max_pain_val, writing_status, _ = compute_option_metrics(
+        smart_api, scrip_df, selected_cfg, selected_row["_ltp_num"], num_strikes=strikes_around
+    )
+
     buildup_status = "N/A"
-    strikes_around = 5
-
-    if selected_cfg["has_oc"] and selected_row["_ltp_num"] is not None:
-        scrip_df = load_scrip_master()
-        expiry_label, contracts = get_option_contracts(
-            scrip_df,
-            selected_cfg["fo_exch"],
-            selected_cfg["fo_name"],
-            selected_row["_ltp_num"],
-            selected_cfg["step"],
-            num_strikes=strikes_around,
+    if not oc_df.empty:
+        total_call_oi = oc_df["Call OI"].sum(skipna=True)
+        total_put_oi = oc_df["Put OI"].sum(skipna=True)
+        total_call_chg_oi = oc_df["Call Chg OI"].sum(skipna=True) if oc_df["Call Chg OI"].notna().any() else None
+        total_put_chg_oi = oc_df["Put Chg OI"].sum(skipna=True) if oc_df["Put Chg OI"].notna().any() else None
+        prev_total_oi = (total_call_oi + total_put_oi) - (
+            (total_call_chg_oi or 0.0) + (total_put_chg_oi or 0.0)
         )
-        market_map = fetch_option_market_data(smart_api, contracts)
-        oc_df = build_nse_style_option_chain(
-            selected_row["_ltp_num"],
-            selected_cfg["step"],
-            contracts,
-            market_map,
-            num_strikes=strikes_around,
-        )
-        if not oc_df.empty:
-            total_call_oi = oc_df["Call OI"].sum(skipna=True)
-            total_put_oi = oc_df["Put OI"].sum(skipna=True)
-            if total_call_oi > 0:
-                pcr_val = round(total_put_oi / total_call_oi, 2)
-            max_pain_val = calculate_max_pain(oc_df)
-
-            total_call_chg_oi = oc_df["Call Chg OI"].sum(skipna=True) if oc_df["Call Chg OI"].notna().any() else None
-            total_put_chg_oi = oc_df["Put Chg OI"].sum(skipna=True) if oc_df["Put Chg OI"].notna().any() else None
-            writing_status = classify_writing(total_call_chg_oi, total_put_chg_oi)
-
-            net_oi_chg_pct = None
-            prev_total_oi = (total_call_oi + total_put_oi) - (
-                (total_call_chg_oi or 0.0) + (total_put_chg_oi or 0.0)
-            )
-            if (total_call_chg_oi is not None or total_put_chg_oi is not None) and prev_total_oi > 0:
-                net_oi_chg_pct = (
-                    ((total_call_chg_oi or 0.0) + (total_put_chg_oi or 0.0)) / prev_total_oi
-                ) * 100.0
-            buildup_status = classify_buildup(selected_row["_chg_pct"], net_oi_chg_pct)
+        net_oi_chg_pct = None
+        if (total_call_chg_oi is not None or total_put_chg_oi is not None) and prev_total_oi > 0:
+            net_oi_chg_pct = (
+                ((total_call_chg_oi or 0.0) + (total_put_chg_oi or 0.0)) / prev_total_oi
+            ) * 100.0
+        buildup_status = classify_buildup(selected_row["_chg_pct"], net_oi_chg_pct)
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("LTP", str(selected_row["LTP"]), str(selected_row["Chg %"]))
