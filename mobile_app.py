@@ -145,6 +145,21 @@ def load_scrip_master():
     return pd.DataFrame()
 
 
+def search_scrip_tokens(scrip_df, keyword):
+    if scrip_df.empty or not keyword:
+        return pd.DataFrame()
+    kw = str(keyword).strip().upper()
+    cols = [c for c in ["symbol", "name", "exch_seg", "token", "instrumenttype"] if c in scrip_df.columns]
+    if not cols:
+        return pd.DataFrame()
+    mask = pd.Series(False, index=scrip_df.index)
+    for col in ["symbol", "name"]:
+        if col in scrip_df.columns:
+            mask = mask | scrip_df[col].astype(str).str.upper().str.contains(kw, na=False)
+    matched = scrip_df.loc[mask, cols].head(25)
+    return matched
+
+
 def safe_float(val):
     try:
         if val is None or val == "":
@@ -198,20 +213,26 @@ def get_prev_day_ohlc_cached(_status_key, exch, token):
     return None, None
 
 
-def classify_buildup(price_chg_pct, oi_chg_pct):
-    if price_chg_pct is None or oi_chg_pct is None:
+def classify_buildup(price_chg_pct, oi_chg_val, oi_chg_pct):
+    if price_chg_pct is None and oi_chg_val is None:
         return "N/A"
-    if abs(price_chg_pct) < 0.01 and abs(oi_chg_pct) < 0.01:
+    p_move = price_chg_pct if price_chg_pct is not None else 0.0
+    o_chg = oi_chg_val if oi_chg_val is not None else 0.0
+    o_pct = oi_chg_pct if oi_chg_pct is not None else 0.0
+
+    if abs(p_move) < 0.01 and abs(o_chg) < 1 and abs(o_pct) < 0.01:
         return "Flat / Neutral"
-    if price_chg_pct > 0 and oi_chg_pct > 0:
+    if p_move > 0 and (o_chg > 0 or o_pct > 0):
         return "Long Buildup"
-    if price_chg_pct < 0 and oi_chg_pct > 0:
+    if p_move < 0 and (o_chg > 0 or o_pct > 0):
         return "Short Buildup"
-    if price_chg_pct > 0 and oi_chg_pct < 0:
+    if p_move > 0 and (o_chg < 0 or o_pct < 0):
         return "Short Covering"
-    if price_chg_pct < 0 and oi_chg_pct < 0:
+    if p_move < 0 and (o_chg < 0 or o_pct < 0):
         return "Long Unwinding"
-    return "N/A"
+    if abs(p_move) >= 0.01 and abs(o_chg) < 1:
+        return "Price Move (Flat OI)"
+    return "Neutral / Mixed"
 
 
 def classify_writing(call_oi_chg, put_oi_chg):
@@ -219,6 +240,8 @@ def classify_writing(call_oi_chg, put_oi_chg):
         return "N/A"
     c_chg = call_oi_chg if call_oi_chg is not None else 0.0
     p_chg = put_oi_chg if put_oi_chg is not None else 0.0
+    if abs(c_chg) < 1 and abs(p_chg) < 1:
+        return "Flat / No Fresh Writing"
     if c_chg <= 0 and p_chg <= 0:
         return "Unwinding / Neutral"
     if p_chg > c_chg and p_chg > 0:
@@ -496,13 +519,12 @@ def main():
 
     st.divider()
 
-    # Index Selector for Dedicated Sections Below
     index_names = [c["name"] for c in INDEX_CONFIG]
     selected_name = st.selectbox("Select Index", index_names, index=0)
     selected_cfg = next(c for c in INDEX_CONFIG if c["name"] == selected_name)
     sel_q = next(q for q in quotes if q["name"] == selected_name)
 
-    # Section 2: Dedicated Price Levels, Day High/Low, Prev Close, Support & Resistance
+    # Section 2: Price Levels, Day High/Low, Prev Close, Support & Resistance
     st.subheader(f"2. Price Levels & Support / Resistance — {selected_name}")
     p1, p2, p3, p4, p5 = st.columns(5)
     p1.metric("LTP", fmt_val(sel_q["ltp"]))
@@ -519,7 +541,7 @@ def main():
 
     st.divider()
 
-    # Fetch Option Chain once for selected index
+    scrip_df = load_scrip_master()
     oc_df = pd.DataFrame()
     expiry_label = None
     pcr_val = "N/A"
@@ -527,8 +549,7 @@ def main():
     writing_val = "N/A"
     buildup_val = "N/A"
 
-    if selected_cfg["has_oc"] and sel_q["ltp"] is not None:
-        scrip_df = load_scrip_master()
+    if selected_cfg["has_oc"] and sel_q["ltp"] is not None and not scrip_df.empty:
         expiry_label, contracts = get_option_contracts(
             scrip_df,
             selected_cfg["fo_exch"],
@@ -556,17 +577,18 @@ def main():
             total_put_chg_oi = oc_df["Put Chg OI"].sum(skipna=True) if oc_df["Put Chg OI"].notna().any() else None
             writing_val = classify_writing(total_call_chg_oi, total_put_chg_oi)
 
-            prev_total_oi = (total_call_oi + total_put_oi) - (
-                (total_call_chg_oi or 0.0) + (total_put_chg_oi or 0.0)
-            )
-            net_oi_chg_pct = None
-            if (total_call_chg_oi is not None or total_put_chg_oi is not None) and prev_total_oi > 0:
-                net_oi_chg_pct = (
-                    ((total_call_chg_oi or 0.0) + (total_put_chg_oi or 0.0)) / prev_total_oi
-                ) * 100.0
-            buildup_val = classify_buildup(sel_q["chg_pct"], net_oi_chg_pct)
+            net_oi_chg_val = None
+            if total_call_chg_oi is not None or total_put_chg_oi is not None:
+                net_oi_chg_val = (total_call_chg_oi or 0.0) + (total_put_chg_oi or 0.0)
 
-    # Section 3: Dedicated Derivatives — PCR, Max Pain, Call/Put Writing & Buildup
+            net_oi_chg_pct = None
+            prev_total_oi = (total_call_oi + total_put_oi) - (net_oi_chg_val or 0.0)
+            if net_oi_chg_val is not None and prev_total_oi > 0:
+                net_oi_chg_pct = (net_oi_chg_val / prev_total_oi) * 100.0
+
+            buildup_val = classify_buildup(sel_q["chg_pct"], net_oi_chg_val, net_oi_chg_pct)
+
+    # Section 3: PCR, Max Pain, Call/Put Writing & Buildup
     st.subheader(f"3. PCR, Max Pain, Call/Put Writing & Buildup — {selected_name}")
     d1, d2, d3, d4 = st.columns(4)
     d1.metric("PCR", str(pcr_val))
@@ -576,20 +598,6 @@ def main():
 
     st.divider()
 
-    # Section 4: Dedicated Option Chain Only
+    # Section 4: Option Chain Only
     exp_text = f" (Expiry: {expiry_label})" if expiry_label else ""
-    st.subheader(f"4. Option Chain — {selected_name}{exp_text}")
-    if not selected_cfg["has_oc"]:
-        st.info("Option chain not applicable for this index.")
-    elif sel_q["ltp"] is None:
-        st.info("Spot LTP unavailable.")
-    else:
-        st.dataframe(oc_df.fillna("N/A"), use_container_width=True, hide_index=True)
-
-    if auto_refresh:
-        time.sleep(15)
-        st.rerun()
-
-
-if __name__ == "__main__":
-    main()
+    st.subheader(f"4. Option Chain — {selec
