@@ -156,8 +156,7 @@ def search_scrip_tokens(scrip_df, keyword):
     for col in ["symbol", "name"]:
         if col in scrip_df.columns:
             mask = mask | scrip_df[col].astype(str).str.upper().str.contains(kw, na=False)
-    matched = scrip_df.loc[mask, cols].head(25)
-    return matched
+    return scrip_df.loc[mask, cols].head(25)
 
 
 def safe_float(val):
@@ -505,7 +504,6 @@ def main():
 
     st.divider()
 
-    # Section 1: Market Indices Overview Cards
     st.subheader("1. Market Indices")
     quotes = [get_index_quote(smart_api, cfg, status_msg) for cfg in INDEX_CONFIG]
     for row_start in range(0, len(quotes), 3):
@@ -524,7 +522,6 @@ def main():
     selected_cfg = next(c for c in INDEX_CONFIG if c["name"] == selected_name)
     sel_q = next(q for q in quotes if q["name"] == selected_name)
 
-    # Section 2: Price Levels, Day High/Low, Prev Close, Support & Resistance
     st.subheader(f"2. Price Levels & Support / Resistance — {selected_name}")
     p1, p2, p3, p4, p5 = st.columns(5)
     p1.metric("LTP", fmt_val(sel_q["ltp"]))
@@ -588,7 +585,6 @@ def main():
 
             buildup_val = classify_buildup(sel_q["chg_pct"], net_oi_chg_val, net_oi_chg_pct)
 
-    # Section 3: PCR, Max Pain, Call/Put Writing & Buildup
     st.subheader(f"3. PCR, Max Pain, Call/Put Writing & Buildup — {selected_name}")
     d1, d2, d3, d4 = st.columns(4)
     d1.metric("PCR", str(pcr_val))
@@ -598,6 +594,32 @@ def main():
 
     st.divider()
 
-    # Section 4: Option Chain Only
     exp_text = f" (Expiry: {expiry_label})" if expiry_label else ""
-    st.subheader(f"4. Option Chain — {selec
+    st.subheader(f"4. Option Chain — {selected_name}{exp_text}")
+    if not selected_cfg["has_oc"]:
+        st.info("Option chain not applicable for this index.")
+    elif sel_q["ltp"] is None:
+        st.info("Spot LTP unavailable.")
+    else:
+        st.dataframe(oc_df.fillna("N/A"), use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    with st.expander("5. Scrip Master Symbol / Token Lookup (Check GIFT Nifty / Dow Jones)"):
+        query_kw = st.text_input("Search symbol or name in OpenAPIScripMaster", value="GIFT")
+        if not scrip_df.empty and query_kw.strip():
+            found_df = search_scrip_tokens(scrip_df, query_kw)
+            if found_df.empty:
+                st.caption(f"No matching contract found for '{query_kw}' in OpenAPIScripMaster.")
+            else:
+                st.dataframe(found_df, use_container_width=True, hide_index=True)
+        elif scrip_df.empty:
+            st.caption("Scrip Master not loaded.")
+
+    if auto_refresh:
+        time.sleep(15)
+        st.rerun()
+
+
+if __name__ == "__main__":
+    main()
