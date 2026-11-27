@@ -9,7 +9,7 @@ import streamlit as st
 from SmartApi import SmartConnect
 
 st.set_page_config(
-    page_title="Rahul Pro Index Terminal",
+    page_title="My AI Trading Brain",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -222,9 +222,9 @@ def classify_writing(call_oi_chg, put_oi_chg):
     if c_chg <= 0 and p_chg <= 0:
         return "Unwinding / Neutral"
     if p_chg > c_chg and p_chg > 0:
-        return "Put Writing (Support)"
+        return "Put Writing"
     if c_chg > p_chg and c_chg > 0:
-        return "Call Writing (Resistance)"
+        return "Call Writing"
     return "Balanced / Mixed"
 
 
@@ -258,10 +258,9 @@ def calculate_max_pain(chain_df):
 def get_index_quote(smart_api, cfg, status_msg):
     ltp = None
     open_p = None
-    high_p = None
-    low_p = None
+    day_high = None
+    day_low = None
     prev_close = None
-    oi = None
 
     if smart_api and cfg["token"]:
         try:
@@ -270,10 +269,9 @@ def get_index_quote(smart_api, cfg, status_msg):
                 d = quote["data"]
                 ltp = safe_float(d.get("ltp"))
                 open_p = safe_float(d.get("open"))
-                high_p = safe_float(d.get("high"))
-                low_p = safe_float(d.get("low"))
+                day_high = safe_float(d.get("high"))
+                day_low = safe_float(d.get("low"))
                 prev_close = safe_float(d.get("close"))
-                oi = safe_float(d.get("oi"))
         except Exception:
             pass
 
@@ -283,38 +281,36 @@ def get_index_quote(smart_api, cfg, status_msg):
     if ltp is not None and prev_close not in (None, 0):
         chg_pct = round(((ltp - prev_close) / prev_close) * 100, 2)
 
-    support_str = "N/A"
-    resistance_str = "N/A"
-    ref_h = prev_high if prev_high is not None else high_p
-    ref_l = prev_low if prev_low is not None else low_p
+    s1_str, s2_str, r1_str, r2_str = "N/A", "N/A", "N/A", "N/A"
+    ref_h = day_high if day_high is not None else prev_high
+    ref_l = day_low if day_low is not None else prev_low
     ref_c = prev_close if prev_close is not None else ltp
     if None not in (ref_h, ref_l, ref_c):
         pivot = (ref_h + ref_l + ref_c) / 3.0
-        s1 = round((2 * pivot) - ref_h, 2)
-        r1 = round((2 * pivot) - ref_l, 2)
-        support_str = f"{s1}"
-        resistance_str = f"{r1}"
+        rng = ref_h - ref_l
+        s1_str = f"{round((2 * pivot) - ref_h, 2)}"
+        r1_str = f"{round((2 * pivot) - ref_l, 2)}"
+        s2_str = f"{round(pivot - rng, 2)}"
+        r2_str = f"{round(pivot + rng, 2)}"
 
     return {
-        "Index": cfg["name"],
-        "LTP": ltp if ltp is not None else "N/A",
-        "Chg %": f"{chg_pct:+.2f}%" if chg_pct is not None else "N/A",
-        "Open": open_p if open_p is not None else "N/A",
-        "Prev High": prev_high if prev_high is not None else "N/A",
-        "Prev Low": prev_low if prev_low is not None else "N/A",
-        "Support": support_str,
-        "Resistance": resistance_str,
-        "PCR": "N/A",
-        "Max Pain": "N/A",
-        "Buildup": "N/A",
-        "Writing": "N/A",
-        "_ltp_num": ltp,
-        "_chg_pct": chg_pct,
-        "_oi_num": oi,
+        "name": cfg["name"],
+        "ltp": ltp,
+        "chg_pct": chg_pct,
+        "open": open_p,
+        "prev_close": prev_close,
+        "day_high": day_high,
+        "day_low": day_low,
+        "prev_high": prev_high,
+        "prev_low": prev_low,
+        "s1": s1_str,
+        "s2": s2_str,
+        "r1": r1_str,
+        "r2": r2_str,
     }
 
 
-def get_option_contracts(scrip_df, fo_exch, fo_name, spot_price, step_size, num_strikes):
+def get_option_contracts(scrip_df, fo_exch, fo_name, spot_price, step_size, num_strikes=15):
     if scrip_df.empty or not fo_exch or not fo_name or spot_price is None:
         return None, []
 
@@ -415,32 +411,13 @@ def fetch_option_market_data(smart_api, contracts):
                             "vol": vol_v,
                         }
             except Exception:
-                for tok in batch:
-                    c_info = next((x for x in contracts if x["token"] == tok), None)
-                    if c_info:
-                        try:
-                            q = smart_api.ltpData(exch, c_info["symbol"], tok)
-                            if isinstance(q, dict) and q.get("status") and q.get("data"):
-                                oi_v = safe_float(q["data"].get("oi"))
-                                chg_oi_v = None
-                                if oi_v is not None:
-                                    if tok not in baseline_map:
-                                        baseline_map[tok] = oi_v
-                                    chg_oi_v = oi_v - baseline_map[tok]
-                                results[tok] = {
-                                    "ltp": safe_float(q["data"].get("ltp")),
-                                    "oi": oi_v,
-                                    "chg_oi": chg_oi_v,
-                                    "vol": None,
-                                }
-                        except Exception:
-                            pass
+                pass
             time.sleep(0.12)
 
     return results
 
 
-def build_nse_style_option_chain(spot_price, step_size, contracts, market_map, num_strikes=15):
+def build_option_chain_df(spot_price, step_size, contracts, market_map, num_strikes=15):
     cols = [
         "Call OI",
         "Call Chg OI",
@@ -482,57 +459,22 @@ def build_nse_style_option_chain(spot_price, step_size, contracts, market_map, n
     return pd.DataFrame(rows)
 
 
-def compute_option_metrics(smart_api, scrip_df, cfg, spot_price, num_strikes=15):
-    oc_df = pd.DataFrame()
-    expiry_label = None
-    pcr_val = "N/A"
-    max_pain_val = "N/A"
-    writing_status = "N/A"
-    buildup_status = "N/A"
-
-    if not cfg["has_oc"] or spot_price is None or scrip_df.empty:
-        return oc_df, expiry_label, pcr_val, max_pain_val, writing_status, buildup_status
-
-    expiry_label, contracts = get_option_contracts(
-        scrip_df,
-        cfg["fo_exch"],
-        cfg["fo_name"],
-        spot_price,
-        cfg["step"],
-        num_strikes=num_strikes,
-    )
-    market_map = fetch_option_market_data(smart_api, contracts)
-    oc_df = build_nse_style_option_chain(
-        spot_price,
-        cfg["step"],
-        contracts,
-        market_map,
-        num_strikes=num_strikes,
-    )
-    if not oc_df.empty:
-        total_call_oi = oc_df["Call OI"].sum(skipna=True)
-        total_put_oi = oc_df["Put OI"].sum(skipna=True)
-        if total_call_oi > 0:
-            pcr_val = round(total_put_oi / total_call_oi, 2)
-        max_pain_val = calculate_max_pain(oc_df)
-
-        total_call_chg_oi = oc_df["Call Chg OI"].sum(skipna=True) if oc_df["Call Chg OI"].notna().any() else None
-        total_put_chg_oi = oc_df["Put Chg OI"].sum(skipna=True) if oc_df["Put Chg OI"].notna().any() else None
-        writing_status = classify_writing(total_call_chg_oi, total_put_chg_oi)
-
-    return oc_df, expiry_label, pcr_val, max_pain_val, writing_status, buildup_status
+def fmt_val(val, suffix=""):
+    if val is None:
+        return "N/A"
+    return f"{val}{suffix}"
 
 
 def main():
-    st.title("Rahul Pro Index Terminal")
+    st.title("My AI Trading Brain")
 
-    col_s1, col_s2, col_s3 = st.columns([2, 1, 1])
-    with col_s1:
+    c_top1, c_top2, c_top3 = st.columns([2, 1, 1])
+    with c_top1:
         smart_api, status_msg = get_smartapi_client()
         st.caption(f"SmartAPI Status: **{status_msg}**")
-    with col_s2:
+    with c_top2:
         auto_refresh = st.toggle("15s Auto Refresh", value=False)
-    with col_s3:
+    with c_top3:
         if st.button("Refresh Now"):
             st.cache_resource.clear()
             st.cache_data.clear()
@@ -540,108 +482,108 @@ def main():
 
     st.divider()
 
-    st.subheader("1. All 9 Indices Overview (Open, Prev High/Low, S&R, PCR, Max Pain)")
-    overview_rows = [get_index_quote(smart_api, cfg, status_msg) for cfg in INDEX_CONFIG]
-    scrip_df = load_scrip_master()
-
-    # Populate PCR and Max Pain for F&O option indices in overview table
-    for r, cfg in zip(overview_rows, INDEX_CONFIG):
-        if cfg["has_oc"] and r["_ltp_num"] is not None and not scrip_df.empty:
-            _, _, idx_pcr, idx_mp, idx_wr, _ = compute_option_metrics(
-                smart_api, scrip_df, cfg, r["_ltp_num"], num_strikes=15
-            )
-            r["PCR"] = str(idx_pcr)
-            r["Max Pain"] = str(idx_mp)
-            r["Writing"] = str(idx_wr)
-
-    df_overview = pd.DataFrame(overview_rows)
-    display_cols = [
-        "Index",
-        "LTP",
-        "Chg %",
-        "Open",
-        "Prev High",
-        "Prev Low",
-        "Support",
-        "Resistance",
-        "PCR",
-        "Max Pain",
-        "Buildup",
-        "Writing",
-    ]
-    st.dataframe(df_overview[display_cols], use_container_width=True, hide_index=True)
+    # Section 1: Market Indices Overview Cards
+    st.subheader("1. Market Indices")
+    quotes = [get_index_quote(smart_api, cfg, status_msg) for cfg in INDEX_CONFIG]
+    for row_start in range(0, len(quotes), 3):
+        cols = st.columns(3)
+        for idx, q in enumerate(quotes[row_start : row_start + 3]):
+            with cols[idx]:
+                ltp_txt = fmt_val(q["ltp"])
+                chg_txt = f"{q['chg_pct']:+.2f}%" if q["chg_pct"] is not None else "N/A"
+                st.metric(q["name"], ltp_txt, chg_txt if q["chg_pct"] is not None else None)
+                st.caption(f"Prev Close: {fmt_val(q['prev_close'])}")
 
     st.divider()
 
-    st.subheader("2. Detailed Index Analyzer (Call/Put Writing & Buildup)")
+    # Index Selector for Dedicated Sections Below
     index_names = [c["name"] for c in INDEX_CONFIG]
     selected_name = st.selectbox("Select Index", index_names, index=0)
     selected_cfg = next(c for c in INDEX_CONFIG if c["name"] == selected_name)
-    selected_row = next(r for r in overview_rows if r["Index"] == selected_name)
+    sel_q = next(q for q in quotes if q["name"] == selected_name)
 
-    strikes_around = 15
-    oc_df, expiry_label, pcr_val, max_pain_val, writing_status, _ = compute_option_metrics(
-        smart_api, scrip_df, selected_cfg, selected_row["_ltp_num"], num_strikes=strikes_around
-    )
+    # Section 2: Dedicated Price Levels, Day High/Low, Prev Close, Support & Resistance
+    st.subheader(f"2. Price Levels & Support / Resistance — {selected_name}")
+    p1, p2, p3, p4, p5 = st.columns(5)
+    p1.metric("LTP", fmt_val(sel_q["ltp"]))
+    p2.metric("Prev Close", fmt_val(sel_q["prev_close"]))
+    p3.metric("Open", fmt_val(sel_q["open"]))
+    p4.metric("Day High", fmt_val(sel_q["day_high"]))
+    p5.metric("Day Low", fmt_val(sel_q["day_low"]))
 
-    buildup_status = "N/A"
-    if not oc_df.empty:
-        total_call_oi = oc_df["Call OI"].sum(skipna=True)
-        total_put_oi = oc_df["Put OI"].sum(skipna=True)
-        total_call_chg_oi = oc_df["Call Chg OI"].sum(skipna=True) if oc_df["Call Chg OI"].notna().any() else None
-        total_put_chg_oi = oc_df["Put Chg OI"].sum(skipna=True) if oc_df["Put Chg OI"].notna().any() else None
-        prev_total_oi = (total_call_oi + total_put_oi) - (
-            (total_call_chg_oi or 0.0) + (total_put_chg_oi or 0.0)
-        )
-        net_oi_chg_pct = None
-        if (total_call_chg_oi is not None or total_put_chg_oi is not None) and prev_total_oi > 0:
-            net_oi_chg_pct = (
-                ((total_call_chg_oi or 0.0) + (total_put_chg_oi or 0.0)) / prev_total_oi
-            ) * 100.0
-        buildup_status = classify_buildup(selected_row["_chg_pct"], net_oi_chg_pct)
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("LTP", str(selected_row["LTP"]), str(selected_row["Chg %"]))
-    m2.metric("Open Price", str(selected_row["Open"]))
-    m3.metric("Prev Day High", str(selected_row["Prev High"]))
-    m4.metric("Prev Day Low", str(selected_row["Prev Low"]))
-
-    m5, m6, m7, m8 = st.columns(4)
-    m5.metric("Support", str(selected_row["Support"]))
-    m6.metric("Resistance", str(selected_row["Resistance"]))
-    m7.metric("PCR", str(pcr_val))
-    m8.metric("Max Pain", str(max_pain_val))
-
-    c_w1, c_w2 = st.columns(2)
-    with c_w1:
-        st.markdown("**Price + OI Buildup Status**")
-        st.info(
-            f"Current Buildup: **{buildup_status}**  \n"
-            "Rules: Long Buildup (Price ↑, OI ↑) | Short Buildup (Price ↓, OI ↑) | "
-            "Short Covering (Price ↑, OI ↓) | Long Unwinding (Price ↓, OI ↓)"
-        )
-    with c_w2:
-        st.markdown("**Call Writing vs Put Writing**")
-        st.info(
-            f"Writing Bias: **{writing_status}**  \n"
-            "Call Writing (Call OI ↑ → Resistance/Supply) | "
-            "Put Writing (Put OI ↑ → Support/Demand)"
-        )
+    sr1, sr2, sr3, sr4 = st.columns(4)
+    sr1.metric("Support 1 (S1)", sel_q["s1"])
+    sr2.metric("Support 2 (S2)", sel_q["s2"])
+    sr3.metric("Resistance 1 (R1)", sel_q["r1"])
+    sr4.metric("Resistance 2 (R2)", sel_q["r2"])
 
     st.divider()
 
-    title_suffix = f" (Expiry: {expiry_label})" if expiry_label else ""
-    st.subheader(f"3. NSE-Style Option Chain — {selected_name}{title_suffix}")
-    if not selected_cfg["has_oc"]:
-        st.warning(f"Option Chain is not applicable/available for {selected_name}.")
-    elif selected_row["_ltp_num"] is None:
-        st.info("Live spot price unavailable right now; option chain strikes will appear once live LTP is received.")
-    else:
-        oc_c1, oc_c2, oc_c3 = st.columns(3)
-        oc_c1.metric("Spot LTP", str(selected_row["LTP"]))
-        oc_c2.metric("Option Chain PCR", str(pcr_val))
-        oc_c3.metric("Calculated Max Pain", str(max_pain_val))
+    # Fetch Option Chain once for selected index
+    oc_df = pd.DataFrame()
+    expiry_label = None
+    pcr_val = "N/A"
+    max_pain_val = "N/A"
+    writing_val = "N/A"
+    buildup_val = "N/A"
 
+    if selected_cfg["has_oc"] and sel_q["ltp"] is not None:
+        scrip_df = load_scrip_master()
+        expiry_label, contracts = get_option_contracts(
+            scrip_df,
+            selected_cfg["fo_exch"],
+            selected_cfg["fo_name"],
+            sel_q["ltp"],
+            selected_cfg["step"],
+            num_strikes=15,
+        )
+        market_map = fetch_option_market_data(smart_api, contracts)
+        oc_df = build_option_chain_df(
+            sel_q["ltp"],
+            selected_cfg["step"],
+            contracts,
+            market_map,
+            num_strikes=15,
+        )
+        if not oc_df.empty:
+            total_call_oi = oc_df["Call OI"].sum(skipna=True)
+            total_put_oi = oc_df["Put OI"].sum(skipna=True)
+            if total_call_oi > 0:
+                pcr_val = round(total_put_oi / total_call_oi, 2)
+            max_pain_val = calculate_max_pain(oc_df)
+
+            total_call_chg_oi = oc_df["Call Chg OI"].sum(skipna=True) if oc_df["Call Chg OI"].notna().any() else None
+            total_put_chg_oi = oc_df["Put Chg OI"].sum(skipna=True) if oc_df["Put Chg OI"].notna().any() else None
+            writing_val = classify_writing(total_call_chg_oi, total_put_chg_oi)
+
+            prev_total_oi = (total_call_oi + total_put_oi) - (
+                (total_call_chg_oi or 0.0) + (total_put_chg_oi or 0.0)
+            )
+            net_oi_chg_pct = None
+            if (total_call_chg_oi is not None or total_put_chg_oi is not None) and prev_total_oi > 0:
+                net_oi_chg_pct = (
+                    ((total_call_chg_oi or 0.0) + (total_put_chg_oi or 0.0)) / prev_total_oi
+                ) * 100.0
+            buildup_val = classify_buildup(sel_q["chg_pct"], net_oi_chg_pct)
+
+    # Section 3: Dedicated Derivatives — PCR, Max Pain, Call/Put Writing & Buildup
+    st.subheader(f"3. PCR, Max Pain, Call/Put Writing & Buildup — {selected_name}")
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("PCR", str(pcr_val))
+    d2.metric("Max Pain", str(max_pain_val))
+    d3.metric("Writing", str(writing_val))
+    d4.metric("Buildup", str(buildup_val))
+
+    st.divider()
+
+    # Section 4: Dedicated Option Chain Only
+    exp_text = f" (Expiry: {expiry_label})" if expiry_label else ""
+    st.subheader(f"4. Option Chain — {selected_name}{exp_text}")
+    if not selected_cfg["has_oc"]:
+        st.info("Option chain not applicable for this index.")
+    elif sel_q["ltp"] is None:
+        st.info("Spot LTP unavailable.")
+    else:
         st.dataframe(oc_df.fillna("N/A"), use_container_width=True, hide_index=True)
 
     if auto_refresh:
